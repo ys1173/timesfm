@@ -1,0 +1,13 @@
+# Generated forecast output
+/output/
+
+# macOS
+.DS_Store
+
+# Environment variables (may contain secrets)
+.env
+
+# Python
+.venv/
+__pycache__/
+*.py[cod]
