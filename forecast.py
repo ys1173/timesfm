@@ -11,7 +11,9 @@ TIMESFM_HORIZON      Override forecast horizon; if unset, defaults to the
                      context length of each series
 TIMESFM_PERCENTILE   Percentile for confidence band, multiple of 10 in
                      [10, 90] (default: 90)
-TIMESFM_OUTPUT_DIR   Directory for PNG and JSON output (default: script dir)
+TIMESFM_OUTPUT_DIR      Directory for PNG and JSON output (default: output/)
+TIMESFM_HOLIDAYS_FILE   Path to holidays/exclusions JSON file
+                        (default: holidays.json next to this script)
 """
 
 from __future__ import annotations
@@ -19,6 +21,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+from datetime import date
 # from datetime import datetime  # only needed for PNG chart
 
 import numpy as np
@@ -27,6 +30,7 @@ import numpy as np
 import timesfm
 
 from datasources import get_source_class
+from preprocessing import interpolate_holidays
 
 # ---------------------------------------------------------------------------
 # Configuration from environment
@@ -49,6 +53,21 @@ UPPER_IDX = PERCENTILE // 10        # e.g. 90 → 9
 LOWER_IDX = 10 - UPPER_IDX         # e.g. 90 → 1  (symmetric lower tail)
 
 MODEL_MAX_CONTEXT = 16384
+
+# Load skip dates from holidays.json (holidays + exclusions treated identically)
+_default_holidays_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "holidays.json")
+HOLIDAYS_FILE = os.environ.get("TIMESFM_HOLIDAYS_FILE", _default_holidays_file)
+HOLIDAY_DATES: set[date] = set()
+
+if os.path.exists(HOLIDAYS_FILE):
+    with open(HOLIDAYS_FILE) as _f:
+        _hdata = json.load(_f)
+    for _entry in _hdata.get("holidays", []) + _hdata.get("exclusions", []):
+        HOLIDAY_DATES.add(date.fromisoformat(_entry["date"]))
+    print(f"Loaded {len(HOLIDAY_DATES)} skip date(s) from {HOLIDAYS_FILE}")
+    print(f"  Dates: {sorted(str(d) for d in HOLIDAY_DATES)}")
+else:
+    print(f"No holidays file found at {HOLIDAYS_FILE}, skipping interpolation.")
 
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
@@ -123,6 +142,15 @@ for series in all_series:
     ctx_vals = series.values[-context_len:]
 
     print(f"Forecasting {series.name}: context={context_len}, horizon={horizon} ...")
+
+    # Apply holiday interpolation if dates are configured
+    if HOLIDAY_DATES:
+        try:
+            series = interpolate_holidays(series, HOLIDAY_DATES)
+            ctx_vals = series.values[-context_len:]
+        except ValueError as e:
+            print(f"  ERROR: {e}")
+            continue
 
     # forecast() → (point_forecast, quantile_forecast)
     # point_forecast:    (batch, horizon)

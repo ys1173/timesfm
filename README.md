@@ -108,6 +108,7 @@ TIMESFM_OUTPUT_DIR=/tmp/results .venv/bin/python forecast.py
 | `TIMESFM_HORIZON` | *(unset)* | Forecast horizon in steps. If unset, defaults to the context length of each series |
 | `TIMESFM_PERCENTILE` | `90` | Percentile for the confidence band. Must be a multiple of 10 between 10 and 90 |
 | `TIMESFM_OUTPUT_DIR` | `output/` | Where PNG and JSON output files are written |
+| `TIMESFM_HOLIDAYS_FILE` | `holidays.json` | Path to the holidays/exclusions JSON file. If the file does not exist, interpolation is skipped |
 
 ### Percentile behaviour
 
@@ -359,6 +360,58 @@ export PROMETHEUS_END=1772500000
 export PROMETHEUS_STEP=3600
 
 .venv/bin/python forecast.py
+```
+
+---
+
+## Holiday Interpolation
+
+Public holidays and maintenance days often produce anomalous values (low traffic, zero activity, no data) that mislead the model if included as context. Dates listed in `holidays.json` are replaced with realistic interpolated data before forecasting.
+
+### holidays.json
+
+The file lives at the project root and has two sections — both are treated identically by the interpolation logic. The distinction is purely for human clarity:
+
+```json
+{
+  "holidays": [
+    {"date": "2026-01-01", "description": "New Year's Day"},
+    {"date": "2026-12-25", "description": "Christmas Day"},
+    {"date": "2026-12-26", "description": "Boxing Day"}
+  ],
+  "exclusions": [
+    {"date": "2026-11-15", "description": "Scheduled maintenance window"},
+    {"date": "2026-11-16", "description": "Post-maintenance blackout period"}
+  ]
+}
+```
+
+- **`holidays`** — recurring public holidays
+- **`exclusions`** — one-off days to skip (maintenance windows, outages, data gaps)
+
+To use a different file path:
+
+```bash
+TIMESFM_HOLIDAYS_FILE=/path/to/my-holidays.json .venv/bin/python forecast.py
+```
+
+If the file does not exist, interpolation is silently skipped and all days are used as-is.
+
+### How it works
+
+1. All dates from both `holidays` and `exclusions` are merged into a single skip set
+2. The context window is scanned for any matching dates
+3. **3 non-holiday days are randomly sampled** from the remaining full days in the same window
+4. Each skip day's data points are replaced **point-by-point** with the average of the 3 sampled days at matching time-of-day positions — preserving the intraday shape (peaks, troughs, normal rhythm)
+5. The modified series is passed to the model as if no anomalous day occurred
+
+### Error condition
+
+If fewer than 3 full non-holiday days remain in the context window, the forecast for that series is skipped with an error message:
+
+```
+ERROR: Series 'my_metric': forecast cannot be produced — only 2 full non-holiday
+day(s) in the context window, need at least 3 to interpolate holidays.
 ```
 
 ---
